@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config import Config
+from src.config import Config, DEFAULT_ALPHASIFT_INSTALL_SPEC, setup_env
 
 
 class ConfigEnvCompatibilityTestCase(unittest.TestCase):
@@ -50,6 +50,60 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config.realtime_source_priority,
             "tencent,akshare_sina,efinance,akshare_em",
         )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_load_from_env_uses_stable_fundamental_timeout_defaults(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
+        self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_alphasift_install_spec_defaults_only_when_env_missing(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.alphasift_install_spec, DEFAULT_ALPHASIFT_INSTALL_SPEC)
+
+    def test_env_example_alphasift_install_spec_matches_trusted_default(self):
+        env_example = Path(__file__).resolve().parents[1] / ".env.example"
+
+        for line in env_example.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ALPHASIFT_INSTALL_SPEC="):
+                self.assertEqual(
+                    line,
+                    f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
+                )
+                break
+        else:
+            self.fail("ALPHASIFT_INSTALL_SPEC missing from .env.example")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_alphasift_install_spec_honors_explicit_empty(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {"STOCK_LIST": "600519", "ALPHASIFT_INSTALL_SPEC": ""},
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.alphasift_install_spec, "")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -121,6 +175,67 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertFalse(config.schedule_run_immediately)
         self.assertTrue(config.run_immediately)
 
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_schedule_run_immediately_ignores_persisted_alias_when_only_legacy_env_is_explicit(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=600519",
+                        "RUN_IMMEDIATELY=true",
+                        "SCHEDULE_RUN_IMMEDIATELY=true",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "RUN_IMMEDIATELY": "false",
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertFalse(config.run_immediately)
+        self.assertFalse(config.schedule_run_immediately)
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_blank_schedule_time_falls_back_to_default(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=600519",
+                        "SCHEDULE_TIME=",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(config.schedule_time, "18:00")
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_report_language_prefers_preexisting_process_env_over_env_file(
@@ -165,6 +280,199 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 config = Config._load_from_env()
 
         self.assertEqual(config.report_language, "en")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_report_show_llm_model_defaults_true_and_can_be_disabled(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+        self.assertTrue(config.report_show_llm_model)
+
+        with patch.dict(os.environ, {"REPORT_SHOW_LLM_MODEL": "false"}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.report_show_llm_model)
+
+        with patch.dict(os.environ, {"REPORT_SHOW_LLM_MODEL": ""}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.report_show_llm_model)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_market_review_color_scheme_defaults_and_accepts_red_up(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+        self.assertEqual(config.market_review_color_scheme, "green_up")
+
+        with patch.dict(os.environ, {"MARKET_REVIEW_COLOR_SCHEME": "red-up"}, clear=True):
+            config = Config._load_from_env()
+        self.assertEqual(config.market_review_color_scheme, "red_up")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_daily_market_context_enabled_defaults_on_and_can_disable(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+        self.assertTrue(config.daily_market_context_enabled)
+
+        with patch.dict(os.environ, {"DAILY_MARKET_CONTEXT_ENABLED": "false"}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.daily_market_context_enabled)
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_runtime_mutable_keys_reload_from_updated_env_file_after_runtime_refresh(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=600519",
+                        "SCHEDULE_ENABLED=false",
+                        "SCHEDULE_TIME=18:00",
+                        "RUN_IMMEDIATELY=true",
+                        "SCHEDULE_RUN_IMMEDIATELY=false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "STOCK_LIST": "600519",
+                    "SCHEDULE_ENABLED": "false",
+                    "SCHEDULE_TIME": "18:00",
+                    "RUN_IMMEDIATELY": "true",
+                    "SCHEDULE_RUN_IMMEDIATELY": "false",
+                },
+                clear=True,
+            ):
+                Config._load_from_env()
+                env_path.write_text(
+                    "\n".join(
+                        [
+                            "STOCK_LIST=300750,TSLA",
+                            "SCHEDULE_ENABLED=true",
+                            "SCHEDULE_TIME=09:30",
+                            "RUN_IMMEDIATELY=false",
+                            "SCHEDULE_RUN_IMMEDIATELY=true",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                Config.reset_instance()
+                setup_env(override=True)
+                config = Config._load_from_env()
+
+        self.assertEqual(config.stock_list, ["300750", "TSLA"])
+        self.assertTrue(config.schedule_enabled)
+        self.assertEqual(config.schedule_time, "09:30")
+        self.assertFalse(config.run_immediately)
+        self.assertTrue(config.schedule_run_immediately)
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_runtime_mutable_keys_prefer_process_env_when_values_differ(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        """When process env explicitly sets a WEBUI-mutable key to a value
+        that differs from .env (e.g. via docker-compose ``environment:``),
+        the process env must win because ``_capture_bootstrap_runtime_env_overrides``
+        runs before dotenv loads and the mismatch proves an intentional override.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=300750,TSLA",
+                        "SCHEDULE_ENABLED=true",
+                        "SCHEDULE_TIME=09:30",
+                        "RUN_IMMEDIATELY=false",
+                        "SCHEDULE_RUN_IMMEDIATELY=true",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "STOCK_LIST": "600519,000001",
+                    "SCHEDULE_ENABLED": "false",
+                    "SCHEDULE_TIME": "18:00",
+                    "RUN_IMMEDIATELY": "true",
+                    "SCHEDULE_RUN_IMMEDIATELY": "false",
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        # Explicit process env overrides win when values differ from .env
+        self.assertEqual(config.stock_list, ["600519", "000001"])
+        self.assertFalse(config.schedule_enabled)
+        self.assertEqual(config.schedule_time, "18:00")
+        self.assertTrue(config.run_immediately)
+        self.assertFalse(config.schedule_run_immediately)
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_runtime_mutable_keys_use_process_env_when_absent_from_file(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        """When a WEBUI-mutable key exists only in process env (not in .env),
+        it IS a genuine explicit override and must be honoured.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            # .env has no STOCK_LIST or SCHEDULE_* keys at all
+            env_path.write_text("LOG_LEVEL=INFO\n", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "STOCK_LIST": "600519,000001",
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(config.stock_list, ["600519", "000001"])
+
+    def test_refresh_stock_list_preserves_empty_required_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text("STOCK_LIST=\n", encoding="utf-8")
+
+            config = Config(stock_list=["600519"])
+            with patch.dict(os.environ, {"ENV_FILE": str(env_path)}, clear=True):
+                config.refresh_stock_list()
+
+        self.assertEqual(config.stock_list, [])
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(issue.severity == "error" and issue.field == "STOCK_LIST" for issue in issues)
+        )
 
     def test_parse_report_language_accepts_known_alias_without_warning(self) -> None:
         with self.assertNoLogs("src.config", level="WARNING"):
